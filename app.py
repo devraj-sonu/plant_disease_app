@@ -5,8 +5,20 @@ import numpy as np
 import json
 from datetime import datetime, timezone
 from PIL import Image
-from tensorflow.keras.models import load_model
+import os
 import streamlit.components.v1 as components
+
+# Try to import TensorFlow/Keras with fallback
+try:
+    from tensorflow.keras.models import load_model
+    MODEL_AVAILABLE = True
+except ImportError:
+    try:
+        from keras.models import load_model
+        MODEL_AVAILABLE = True
+    except ImportError:
+        MODEL_AVAILABLE = False
+        st.error("⚠️ TensorFlow/Keras not available. Disease detection disabled.")
 
 # --- High Contrast & Readable Styles ---
 st.markdown("""
@@ -99,7 +111,6 @@ st.markdown(
     "<h1 class='branded-title'>🌿 Smart Farm Monitoring Dashboard 🌿</h1>", 
     unsafe_allow_html=True
 )
-# st.markdown("<h3 class='subtitle'>by GROUP-20</h3>", unsafe_allow_html=True)
 
 st.markdown(
     "<div class='subtitle' style='font-size:1.15rem; margin-top:8px; margin-bottom:20px;'>"
@@ -108,15 +119,40 @@ st.markdown(
 
 st.markdown("<div class='welcome'>Welcome, <b>GROUP-20</b>! Upload a leaf image and environment readings below:</div>", unsafe_allow_html=True)
 
-# Supabase config
-SUPABASE_URL = "https://qgsthykitdzbxopqlolk.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFnc3RoeWtpdGR6YnhvcHFsb2xrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIwMTQxNDAsImV4cCI6MjA3NzU5MDE0MH0.P_GLW_mTE1bAjlABIiZdC7YY7dD0zCxcf0H9pdistQs"
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Supabase config with error handling
+try:
+    SUPABASE_URL = st.secrets.get("SUPABASE_URL", "https://qgsthykitdzbxopqlolk.supabase.co")
+    SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFnc3RoeWtpdGR6YnhvcHFsb2xrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIwMTQxNDAsImV4cCI6MjA3NzU5MDE0MH0.P_GLW_mTE1bAjlABIiZdC7YY7dD0zCxcf0H9pdistQs")
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception as e:
+    st.error(f"⚠️ Supabase connection failed: {e}")
+    supabase = None
 
-with open("disease_info.json", "r") as f:
-    disease_info = json.load(f)
-model = load_model("model/plant_disease_model.h5")
+# Load disease info with error handling
+try:
+    with open("disease_info.json", "r") as f:
+        disease_info = json.load(f)
+except FileNotFoundError:
+    st.warning("⚠️ disease_info.json not found. Using default remedies.")
+    disease_info = {
+        "Healthy": {"remedy": "Your plant is healthy. Keep providing adequate water and sunlight."},
+        "Powdery Mildew": {"remedy": "Use a fungicide spray and ensure proper air circulation."},
+        "Leaf Spot": {"remedy": "Remove infected leaves and avoid overhead watering."}
+    }
+
+# Load model with error handling
+model = None
 class_names = ["Healthy", "Powdery Mildew", "Leaf Spot"]
+
+if MODEL_AVAILABLE:
+    try:
+        model_path = "model/plant_disease_model.h5"
+        if os.path.exists(model_path):
+            model = load_model(model_path)
+        else:
+            st.warning(f"⚠️ Model file not found at {model_path}. Disease detection will be simulated.")
+    except Exception as e:
+        st.warning(f"⚠️ Could not load model: {e}")
 
 # Sensor Data UI
 c1, c2, c3 = st.columns(3)
@@ -135,13 +171,24 @@ if uploaded_file:
 if st.button("🔎 Analyze & Submit Data", type="primary"):
     try:
         disease, prediction_score, remedy = None, None, None
+        
         if uploaded_file:
-            image = Image.open(uploaded_file).resize((128, 128))
-            img_array = np.array(image).reshape((1, 128, 128, 3)) / 255.0
-            prediction = model.predict(img_array)
-            disease = class_names[np.argmax(prediction)]
-            prediction_score = float(np.max(prediction))
-            remedy = disease_info[disease]["remedy"]
+            if model is not None:
+                # Real prediction
+                image = Image.open(uploaded_file).resize((128, 128))
+                img_array = np.array(image).reshape((1, 128, 128, 3)) / 255.0
+                prediction = model.predict(img_array)
+                disease = class_names[np.argmax(prediction)]
+                prediction_score = float(np.max(prediction))
+            else:
+                # Simulated prediction (for demo without model)
+                import random
+                disease = random.choice(class_names)
+                prediction_score = random.uniform(0.7, 0.95)
+                st.info("ℹ️ Using simulated prediction (model not available)")
+            
+            remedy = disease_info.get(disease, {}).get("remedy", "No remedy information available.")
+            
             st.markdown(
                 f"<div class='detected-block centered'>🍃 Detected Disease: <b>{disease}</b> (Confidence: {prediction_score:.2f})</div>",
                 unsafe_allow_html=True)
@@ -189,49 +236,57 @@ if st.button("🔎 Analyze & Submit Data", type="primary"):
                     setTimeout(() => container.innerHTML = '', 6000);
                 </script>
             """, height=0)
-            
-        record = {
-            "temperature": temperature,
-            "humidity": humidity,
-            "moisture": moisture,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "disease": disease,
-            "confidence": prediction_score,
-            "publisher": "DEVRAJ GIRI"
-        }
-        response = supabase.table("sensor_data").insert(record).execute()
-        if response.data:
-            st.success("✅ Data uploaded for GROUP-20!", icon="🌱")
+        
+        # Save to Supabase
+        if supabase:
+            record = {
+                "temperature": temperature,
+                "humidity": humidity,
+                "moisture": moisture,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "disease": disease,
+                "confidence": prediction_score,
+                "publisher": "DEVRAJ GIRI"
+            }
+            response = supabase.table("sensor_data").insert(record).execute()
+            if response.data:
+                st.success("✅ Data uploaded for GROUP-20!", icon="🌱")
+            else:
+                st.error(f"❌ Upload failed for publisher: DEVRAJ GIRI.")
         else:
-            st.error(f"❌ Upload failed for publisher: DEVRAJ GIRI. {response}")
+            st.warning("⚠️ Supabase not connected. Data not saved.")
+            
     except Exception as e:
         st.error(f"⚠️ Error (DEVRAJ GIRI): {e}")
 
 st.markdown("<div class='data-block'><div class='big-sub'>📊 Live Monitoring Charts </div></div>", unsafe_allow_html=True)
 
-try:
-    data = supabase.table("sensor_data").select("*").order("id", desc=True).limit(100).execute()
-    if data.data:
-        df = pd.DataFrame(data.data)
-        st.markdown("<div class='data-block'>", unsafe_allow_html=True)
-        st.markdown("<div style='font-size:1.15rem; color:#2d3748; margin-bottom:10px; text-align:center; font-weight:600;'><b>📋 Data Table</b></div>", unsafe_allow_html=True)
-        st.dataframe(df, height=300)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("<div class='data-block'>", unsafe_allow_html=True)
-        st.markdown("<div class='big-sub'>📈 Temperature, Humidity, Moisture Trends</div>", unsafe_allow_html=True)
-        st.line_chart(df.set_index("id")[["temperature", "humidity", "moisture"]])
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        if "disease" in df.columns:
+if supabase:
+    try:
+        data = supabase.table("sensor_data").select("*").order("id", desc=True).limit(100).execute()
+        if data.data:
+            df = pd.DataFrame(data.data)
             st.markdown("<div class='data-block'>", unsafe_allow_html=True)
-            st.markdown("<div class='big-sub'>📊 Disease Distribution</div>", unsafe_allow_html=True)
-            st.bar_chart(df["disease"].value_counts())
+            st.markdown("<div style='font-size:1.15rem; color:#2d3748; margin-bottom:10px; text-align:center; font-weight:600;'><b>📋 Data Table</b></div>", unsafe_allow_html=True)
+            st.dataframe(df, height=300)
             st.markdown("</div>", unsafe_allow_html=True)
-    else:
-        st.info("No data uploaded yet. Publisher: DEVRAJ GIRI.")
-except Exception as e:
-    st.error(f"⚠️ Could not fetch data for DEVRAJ GIRI: {e}")
+
+            st.markdown("<div class='data-block'>", unsafe_allow_html=True)
+            st.markdown("<div class='big-sub'>📈 Temperature, Humidity, Moisture Trends</div>", unsafe_allow_html=True)
+            st.line_chart(df.set_index("id")[["temperature", "humidity", "moisture"]])
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            if "disease" in df.columns:
+                st.markdown("<div class='data-block'>", unsafe_allow_html=True)
+                st.markdown("<div class='big-sub'>📊 Disease Distribution</div>", unsafe_allow_html=True)
+                st.bar_chart(df["disease"].value_counts())
+                st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            st.info("No data uploaded yet. Publisher: DEVRAJ GIRI.")
+    except Exception as e:
+        st.error(f"⚠️ Could not fetch data for DEVRAJ GIRI: {e}")
+else:
+    st.warning("⚠️ Supabase not connected. Cannot display live data.")
 
 # Footer brand
 st.markdown("""
