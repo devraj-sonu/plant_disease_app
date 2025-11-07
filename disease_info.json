@@ -1,0 +1,11 @@
+{
+  "Healthy": {
+    "remedy": "Your plant is healthy. Keep providing adequate water and sunlight."
+  },
+  "Powdery Mildew": {
+    "remedy": "Use a fungicide spray and ensure proper air circulation."
+  },
+  "Leaf Spot": {
+    "remedy": "Remove infected leaves and avoid overhead watering."
+  }
+}
